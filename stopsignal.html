@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>微信Stop-Signal任务</title>
+    <script src="https://unpkg.com/jspsych@7.3.3"></script>
+    <script src="https://unpkg.com/@jspsych/plugin-html-keyboard-response@1.1.2"></script>
+    <script src="https://unpkg.com/@jspsych/plugin-stop-signal@1.0.0"></script>
+    <script src="https://unpkg.com/@jspsych/plugin-instructions@1.1.2"></script>
+    <link href="https://unpkg.com/jspsych@7.3.3/css/jspsych.css" rel="stylesheet">
+    <style>
+        body {
+            -webkit-touch-callout: none;
+            -webkit-user-select: none;
+            -khtml-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+            background-color: #f5f5f5;
+            font-family: 'PingFang SC', 'Helvetica Neue', Arial, sans-serif;
+        }
+        .wechat-tip {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            background: #FFECB3;
+            padding: 10px;
+            text-align: center;
+            z-index: 9999;
+        }
+    </style>
+</head>
+<body>
+    <div class="wechat-tip" id="wechatTip">
+        建议点击右上角···选择"在浏览器打开"获得最佳体验
+    </div>
+    <div id="jspsych-experiment"></div>
+
+    <script>
+        // 检测是否在微信内打开
+        function isWeChat() {
+            return /MicroMessenger/i.test(navigator.userAgent);
+        }
+        
+        if(isWeChat()) {
+            document.getElementById('wechatTip').style.display = 'block';
+        }
+
+        // 初始化jsPsych
+        const jsPsych = initJsPsych({
+            on_finish: function() {
+                saveData();
+                showCompletionMessage();
+            },
+            exclusions: {
+                min_width: 300,
+                min_height: 300
+            }
+        });
+
+        // 实验参数配置
+        const nTrials = 80; // 总试次数
+        const stopSignalProbability = 0.25; // Stop信号出现概率
+        const initialSSD = 250; // 初始Stop信号延迟(ms)
+        
+        // 指导语
+        const instructions = {
+            type: 'html-keyboard-response',
+            stimulus: `
+                <div style="text-align: left; max-width: 800px; margin: 0 auto; padding: 20px;">
+                    <h2>实验说明</h2>
+                    <p>在本实验中，屏幕中央会出现箭头(←或→)。</p>
+                    <p>当出现<strong>←</strong>时，请按<strong>F键</strong>；</p>
+                    <p>当出现<strong>→</strong>时，请按<strong>J键</strong>。</p>
+                    <p>有时箭头出现后会变为<strong>⏹</strong>符号，此时请<strong>停止按键</strong>。</p>
+                    <p>实验共${nTrials}个试次，请尽可能快速准确地做出反应。</p>
+                    <p style="color: #888; margin-top: 30px;">按空格键开始实验</p>
+                </div>
+            `,
+            post_trial_gap: 1000,
+            choices: [' ']
+        };
+
+        // 生成试次序列
+        function generateTrialSequence() {
+            let trials = [];
+            for(let i=0; i<nTrials; i++) {
+                let isStopTrial = Math.random() < stopSignalProbability;
+                let stimulus = Math.random() < 0.5 ? '←' : '→';
+                let correctKey = stimulus === '←' ? 'f' : 'j';
+                
+                trials.push({
+                    stimulus: stimulus,
+                    stop_signal: isStopTrial ? '⏹' : null,
+                    stop_delay: initialSSD,
+                    correct_key: correctKey,
+                    trial_type: isStopTrial ? 'stop' : 'go'
+                });
+            }
+            return trials;
+        }
+
+        // 创建试次
+        const trialSequence = generateTrialSequence();
+        let timeline = [instructions];
+
+        trialSequence.forEach((trial, index) => {
+            let stopSignalTrial = {
+                type: 'stop-signal',
+                stimulus: trial.stimulus,
+                stop_signal: trial.stop_signal,
+                stop_delay: trial.stop_delay,
+                choices: ['f', 'j'],
+                trial_duration: 2000,
+                response_ends_trial: true,
+                post_trial_gap: 500 + Math.random() * 500,
+                data: {
+                    trial_index: index,
+                    trial_type: trial.trial_type,
+                    correct_key: trial.correct_key,
+                    stimulus: trial.stimulus
+                },
+                on_finish: function(data) {
+                    // 计算反应是否正确
+                    data.correct = data.rt !== null ? 
+                                  (data.key_press === trial.correctKey && trial.trial_type === 'go') || 
+                                  (data.key_press === null && trial.trial_type === 'stop') : false;
+                    
+                    // 动态调整SSD
+                    if(trial.trial_type === 'stop') {
+                        let nextTrial = trialSequence[index+1];
+                        if(nextTrial && nextTrial.trial_type === 'stop') {
+                            if(data.key_press === null) { // 成功抑制
+                                nextTrial.stop_delay += 50;
+                            } else { // 抑制失败
+                                nextTrial.stop_delay = Math.max(50, nextTrial.stop_delay - 50);
+                            }
+                        }
+                    }
+                }
+            };
+            
+            timeline.push(stopSignalTrial);
+        });
+
+        // 完成提示
+        function showCompletionMessage() {
+            document.getElementById('jspsych-experiment').innerHTML = `
+                <div style="text-align: center; padding: 50px;">
+                    <h2>实验完成!</h2>
+                    <p>感谢您的参与</p>
+                    <p>数据已自动保存</p>
+                </div>
+            `;
+        }
+
+        // 数据保存函数
+        function saveData() {
+            // 获取被试ID(可以从URL参数获取或生成随机ID)
+            const urlParams = new URLSearchParams(window.location.search);
+            const participantId = urlParams.get('id') || 'anonymous_' + Math.floor(Math.random()*10000);
+            
+            // 获取实验数据
+            const data = jsPsych.data.get();
+            data.addProperties({
+                participant_id: participantId,
+                date: new Date().toISOString(),
+                device: navigator.userAgent,
+                screen_resolution: `${window.screen.width}x${window.screen.height}`
+            });
+            
+            // 两种保存方式
+            // 1. 本地下载(适用于电脑或手机浏览器)
+            data.localSave('csv', `stop_signal_${participantId}_${new Date().getTime()}.csv`);
+            
+            // 2. 发送到服务器(需要替换为你的API端点)
+            fetch('https://your-server-api.com/save-data', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    participant_id: participantId,
+                    data: data.csv()
+                })
+            }).catch(error => {
+                console.error('保存数据到服务器失败:', error);
+            });
+        }
+
+        // 开始实验
+        jsPsych.run(timeline);
+    </script>
+</body>
+</html>
